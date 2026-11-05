@@ -1,93 +1,132 @@
-# UrlShortener - Architectural Overview
+# URL Shortener
 
-`UrlShortener` is a full-stack, cross-platform URL shortening and analytics tracking utility. It enables users to create compact, custom, or expiring links, redirect visitors instantly, and monitor visitor statistics (device, operating system, geolocation, and referrer) in real-time.
+URL Shortener is a full-stack link-management application for creating compact links and inspecting how they are used. Users can register, sign in, create generated or custom aliases, set expiry and click limits, and view click analytics such as device, browser, operating system, referrer, and country. Link clicks are broadcast to connected dashboards in real time.
 
----
+## Highlights
 
-## Technical Stack
+- ASP.NET Core REST API and a Blazor WebAssembly single-page client
+- JWT-based registration, sign-in, and per-user link management
+- Generated Base62 slugs and user-supplied aliases
+- Expiry dates and click limits for short links
+- Click analytics with browser/device parsing and country lookup
+- SignalR hubs for live dashboard updates
+- SQLite persistence, optional Redis distributed caching, and Docker Compose support
 
-The application is structured as a modern client-server system using:
-- **Backend**: ASP.NET Core API (.NET 10.0)
-- **Frontend**: Blazor WebAssembly Single Page Application (SPA) (.NET 10.0)
-- **Shared Libraries**: Shared DTOs and Socket payload contracts (.NET 10.0 Class Library)
-- **Database**: SQLite (managed via Entity Framework Core)
-- **Caching & Rate Limiting**: Redis (Distributed caching) & fixed-window rate-limiting middleware
-- **Real-time Streaming**: ASP.NET Core SignalR (WebSockets)
-- **Containerization**: Docker & Docker Compose (served via Nginx)
+## Technology
 
----
+| Area | Tools |
+| --- | --- |
+| Backend | ASP.NET Core Web API, .NET 10, C# |
+| Frontend | Blazor WebAssembly, Razor, Bootstrap |
+| Shared contracts | .NET class library for models and DTOs |
+| Persistence | SQLite, Entity Framework Core migrations |
+| Caching | Redis when available; in-memory distributed cache fallback |
+| Real time | ASP.NET Core SignalR |
+| API documentation | OpenAPI and Scalar in Development |
+| Testing | xUnit, ASP.NET Core integration testing, EF Core InMemory provider |
+| Deployment | Docker, Docker Compose, Nginx for the static frontend |
 
-## Component Architecture
+## Run with Docker Compose
 
-The application is decoupled into three main projects:
+### Prerequisites
 
-```mermaid
-graph TD
-    subgraph Client [Client-Side Browser]
-        A[Blazor WASM UI]
-        B[SignalR Client]
-    end
+- Docker Engine or Docker Desktop with the Compose plugin
 
-    subgraph Proxy [Reverse Proxy / Web Server]
-        C[Nginx]
-    end
+From the repository root, build and start the frontend, API, and Redis cache:
 
-    subgraph ServiceLayer [Backend Services]
-        D[ASP.NET Core API]
-        E[SignalR Hubs]
-    end
-
-    subgraph Storage [Persistence & Caching]
-        F[(SQLite DB)]
-        G[(Redis Cache)]
-    end
-
-    A -->|Static Assets| C
-    A -->|REST API Requests| D
-    B -->|Real-time Socket Connection| E
-    D -->|EF Core Queries| F
-    D -->|Cache-Aside Access| G
-    E -->|Broadcast Updates| B
+```sh
+docker compose up --build
 ```
 
-### 1. Frontend SPA (`UrlShortener.Frontend`)
-A Blazor WebAssembly application compiled into static files and served using Nginx. It communicates asynchronously with the API using a preconfigured `HttpClient` and connects to backend SignalR hubs to update the dashboard dynamically when clicks occur.
+- **Web app:** [http://localhost:5157](http://localhost:5157)
+- **API:** [http://localhost:5112](http://localhost:5112)
 
-### 2. Shared Library (`UrlShortener.Shared`)
-Acts as a contract library sharing C# models, data transfer objects (DTOs), and socket communication entities between both compile targets.
+The Compose setup stores SQLite data in a named Docker volume. Stop the services with `Ctrl+C`, then remove the containers with:
 
-### 3. Backend API (`UrlShortener`)
-An ASP.NET Core Web API that manages the core lifecycle. It is structured into separate responsibilities:
-* **Controllers**: Endpoints exposing authentication (`UserController`) and link management/redirection (`UrlController`).
-* **Services**: Coordination layers managing shortening business logic, expiration rules, geolocation lookup, and cache policies.
-* **Repositories**: Abstracted data access layers interfacing directly with SQLite.
-* **Hubs**: SignalR communication gateways (`DashboardHub`) propagating telemetry updates.
+```sh
+docker compose down
+```
 
----
+To also remove the persisted database volume and its contents, use `docker compose down --volumes`.
 
-## Key Design Patterns & Algorithms
+## Run for development
 
-### 1. Base62 URL Short-Code Generation
-To convert long URLs into compact slugs, the system uses a **Base62 alphanumeric encoder**:
-1. It hashes a combined payload of the database record `ID`, a fresh random `GUID`, and the `originalUrl` using **SHA-256**.
-2. It extracts the first 8 bytes of the resulting hash and converts them into a positive 64-bit integer.
-3. This integer is mathematically encoded into a base-62 representation using the URL-safe character set `[0-9A-Za-z]`.
-4. If a collision is detected in the database, it regenerates a new hash until a unique code is created.
+### Prerequisites
 
-### 2. Cache-Aside Pattern
-To maximize performance and protect SQLite from read-heavy redirect traffic, the backend implements a **Cache-Aside model**:
-* When a visitor clicks a short link, the service first queries **Redis** using the pattern `originalurl:{slug}`.
-* **Cache Hit**: Instantly redirects the user, bypassing database reads.
-* **Cache Miss**: Queries the SQLite database, checks expiration/limits, saves the item back to Redis, and executes the redirection.
-* **Invalidation**: On any updates or deletions, the Redis cache entries are evicted immediately to maintain data consistency.
+- .NET 10 SDK
 
-### 3. Real-Time Telemetry Broadcasting
-When a short link is visited, the backend processes telemetry, updates the database, invalidates the cache, and instantly pushes the new click count to all active dashboards using a **SignalR Hub connection**, bypassing the need for client-side polling.
+Run the API and frontend in separate terminals from the repository root:
 
-### 4. Client Telemetry Parsing & Geolocation
-* **Device Telemetry**: Uses `UAParser` to analyze incoming requests' `User-Agent` headers, extracting the operating system, device family, and browser version.
-* **IP Geolocation**: An HTTP-based geolocation client translates client IP addresses into standard country codes.
+```sh
+dotnet run --project UrlShortener/UrlShortener.csproj --launch-profile http
+```
 
-### 5. API Rate Limiting & Auth
-* **Rate Limiting**: Endpoint creation is protected by fixed-window rate-limiting middleware configured to prevent request floods.
-* **Authentication**: Admin operations require a JWT Bearer token transmitted in HTTP request authorization headers.
+```sh
+dotnet run --project UrlShortener.Frontend/UrlShortener.Frontend.csproj --launch-profile http
+```
+
+Open [http://localhost:5157](http://localhost:5157). The frontend is configured to call the API at `http://localhost:5112`; the API's default CORS policy allows the frontend's development origin. The API applies its EF Core migrations at startup and uses SQLite by default. Redis is optional in development: if it is unavailable, the API falls back to in-memory distributed caching.
+
+When running the API in the Development environment, the Scalar API reference is available at [http://localhost:5112/scalar/v1](http://localhost:5112/scalar/v1).
+
+## Tests
+
+Run the test suite from the repository root:
+
+```sh
+dotnet test UrlShortener.slnx
+```
+
+The current integration tests exercise short-link redirect behavior, including missing and expired links.
+
+## Architecture
+
+The repository is organized into four .NET projects: the API, browser client, shared contracts, and integration tests.
+
+```mermaid
+graph LR
+    Browser[Browser: Blazor WebAssembly] -->|Static assets| Nginx[Nginx in Compose]
+    Browser -->|HTTP API requests| API[ASP.NET Core API]
+    Browser <-->|SignalR| Hubs[SignalR hubs]
+    API -->|EF Core| SQLite[(SQLite)]
+    API -->|Distributed cache| Redis[(Redis or in-memory fallback)]
+    API --> Hubs
+```
+
+### Projects
+
+- **`UrlShortener`** — ASP.NET Core API, controllers, domain services, repositories, middleware, EF Core context, and SignalR hubs.
+- **`UrlShortener.Frontend`** — Blazor WebAssembly user interface and client services; Compose builds the published static assets into an Nginx image.
+- **`UrlShortener.Shared`** — models, request/response DTOs, and shared SignalR payload types used by the API and client.
+- **`UrlShortener.Tests`** — integration tests using `WebApplicationFactory` and an in-memory EF Core database.
+
+## Engineering details
+
+### Short-code generation
+
+When no custom alias is provided, the service hashes the database ID, a new GUID, and the original URL with SHA-256. It converts the first eight hash bytes to an integer, encodes that number using the Base62 alphabet `0-9A-Za-z`, and checks for collisions before saving the code.
+
+### Redirect and caching flow
+
+Redirect lookup uses a cache-aside strategy with the key `originalurl:{slug}`. A cache miss loads the link from SQLite and checks its expiration date and click limit before redirecting. On a successful visit, the click count is persisted, the relevant cache entries are cleared, and the updated count is broadcast to connected dashboards.
+
+### Analytics and live updates
+
+The redirect endpoint parses the request's user-agent to derive browser, operating system, version, and device details. It also records the referrer and requests a country code from the geolocation service. SignalR hubs deliver dashboard and click information to connected clients without polling.
+
+### Authentication and request protection
+
+Registration and login issue JWTs. Authenticated link operations are scoped to the current user, and link creation uses a fixed-window rate limiter (10 requests per minute). The API uses structured Serilog logging and centralized request/exception middleware.
+
+## Configuration
+
+The main settings are in `UrlShortener/appsettings.json`; environment variables can override .NET configuration values:
+
+| Setting | Purpose |
+| --- | --- |
+| `ConnectionStrings__DefaultConnection` | SQLite connection string |
+| `Redis__ConnectionString` | Redis connection; the API falls back to in-memory caching if unavailable |
+| `Cors__AllowedOrigins__0` | Allowed frontend origin |
+| `Jwt__Key`, `Jwt__Issuer`, `Jwt__Audience` | JWT signing and validation settings |
+
+The checked-in configuration is suitable for local development. Supply a private signing key and production-specific origins/connection strings through environment-specific configuration or a secret manager when deploying the application.
